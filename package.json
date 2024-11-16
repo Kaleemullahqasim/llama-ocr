@@ -28,6 +28,7 @@
     "Llama"
   ],
   "dependencies": {
+    "node-fetch": "^3.3.2",
     "together-ai": "^0.9.0"
   }
 }

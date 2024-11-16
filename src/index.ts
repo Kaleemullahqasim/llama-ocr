@@ -1,36 +1,38 @@
-import Together from "together-ai";
-import fs from "fs";
+import * as fs from "fs"; // Use named import for fs
 
+let fetch: any; // Declare fetch as a variable
+
+(async () => {
+  fetch = (await import("node-fetch")).default;
+})().catch((err) => console.error("Initialization Error:", err));
+
+// Define the LLMResponse interface
+interface LLMResponse {
+  choices: Array<{
+    message: {
+      content: string;
+    };
+  }>;
+}
+
+// Export the ocr function
 export async function ocr({
   filePath,
-  apiKey = process.env.TOGETHER_API_KEY,
-  model = "Llama-3.2-90B-Vision",
+  model = "llama3.2-vision:latest",
 }: {
   filePath: string;
-  apiKey?: string;
-  model?: "Llama-3.2-90B-Vision" | "Llama-3.2-11B-Vision" | "free";
+  model?: string;
 }) {
-  const visionLLM =
-    model === "free"
-      ? "meta-llama/Llama-Vision-Free"
-      : `meta-llama/${model}-Instruct-Turbo`;
-
-  const together = new Together({
-    apiKey,
-  });
-
-  let finalMarkdown = await getMarkDown({ together, visionLLM, filePath });
-
+  const finalMarkdown = await getMarkDown({ model, filePath });
   return finalMarkdown;
 }
 
+// Define the getMarkDown function
 async function getMarkDown({
-  together,
-  visionLLM,
+  model,
   filePath,
 }: {
-  together: Together;
-  visionLLM: string;
+  model: string;
   filePath: string;
 }) {
   const systemPrompt = `Convert the provided image into Markdown format. Ensure that all content from the page is included, such as headers, footers, subtexts, images (with alt text if possible), tables, and any other elements.
@@ -42,37 +44,74 @@ async function getMarkDown({
   - Complete Content: Do not omit any part of the page, including headers, footers, and subtext.
   `;
 
-  const finalImageUrl = isRemoteFile(filePath)
-    ? filePath
-    : `data:image/jpeg;base64,${encodeImage(filePath)}`;
+  const imageBase64 = isRemoteFile(filePath)
+    ? await fetchBase64(filePath)
+    : encodeImage(filePath);
 
-  const output = await together.chat.completions.create({
-    model: visionLLM,
+  const requestBody = {
+    model,
     messages: [
       {
         role: "user",
-        // @ts-expect-error
-        content: [
-          { type: "text", text: systemPrompt },
-          {
-            type: "image_url",
-            image_url: {
-              url: finalImageUrl,
-            },
-          },
-        ],
+        content: systemPrompt,
+        images: [imageBase64],
       },
     ],
+  };
+
+  const response = await fetch("http://localhost:11434/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestBody),
   });
 
-  return output.choices[0].message.content;
+  if (!response.ok) {
+    throw new Error(`Error from LLM service: ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as LLMResponse;
+
+  return data.choices[0]?.message?.content || "No content returned.";
 }
 
+// Encode image to Base64
 function encodeImage(imagePath: string) {
   const imageFile = fs.readFileSync(imagePath);
   return Buffer.from(imageFile).toString("base64");
 }
 
+// Check if the file path is remote
 function isRemoteFile(filePath: string): boolean {
   return filePath.startsWith("http://") || filePath.startsWith("https://");
 }
+
+// Fetch and convert remote file to Base64
+async function fetchBase64(url: string): Promise<string> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Error fetching remote file: ${response.statusText}`);
+  }
+  const buffer = await response.arrayBuffer();
+  return Buffer.from(buffer).toString("base64");
+}
+
+// CLI Argument Support
+const args = process.argv.slice(2); // Arguments after "node index.js"
+const filePath = args[0]; // First argument is the file path
+
+if (!filePath) {
+  console.error("Please provide the file path as the first argument.");
+  process.exit(1); // Exit with error if no file path is provided
+}
+
+ocr({ filePath })
+  .then((result) => {
+    console.log("OCR Result:");
+    console.log(result);
+  })
+  .catch((error) => {
+    console.error("Error during OCR:");
+    console.error(error.message);
+  });
